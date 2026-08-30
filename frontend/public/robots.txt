@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://reachinbox-email-scheduler-1-jt5g.onrender.com/sitemap.xml
+Sitemap: https://reachinbox-email-scheduler-yd4h.onrender.com/sitemap.xml
