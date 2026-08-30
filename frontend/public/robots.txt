@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://reachinbox-email-scheduler-1-jt5g.onrender.com/sitemap.xml
