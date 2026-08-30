@@ -132,7 +132,7 @@ export const App: React.FC = () => {
   }, []);
 
   const handleGoogleLogin = () => {
-    window.location.href = 'http://localhost:5000/api/auth/google';
+    window.location.href = 'https://reachinbox-email-scheduler-yd4h.onrender.com/api/auth/google';
   };
 
   const handleLogout = async () => {
@@ -147,7 +147,7 @@ export const App: React.FC = () => {
   };
 
   const handleConnectSlack = () => {
-    window.location.href = 'http://localhost:5000/api/slack/connect';
+    window.location.href = 'https://reachinbox-email-scheduler-yd4h.onrender.com/api/slack/connect';
   };
 
   const handleDisconnectSlack = async () => {
