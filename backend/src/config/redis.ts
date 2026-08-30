@@ -1,11 +1,19 @@
 import Redis from 'ioredis';
 import { env } from './env';
 
-// Connection options for BullMQ (reuses URL config)
+const redisUrl = new URL(env.REDIS_URL);
+
 export const redisConnectionOptions = {
   connection: {
-    url: env.REDIS_URL,
-    maxRetriesPerRequest: null, // Critical requirement for BullMQ
+    host: redisUrl.hostname,
+    port: Number(redisUrl.port || 6379),
+    ...(redisUrl.username && {
+      username: decodeURIComponent(redisUrl.username),
+    }),
+    ...(redisUrl.password && {
+      password: decodeURIComponent(redisUrl.password),
+    }),
+    maxRetriesPerRequest: null,
   },
 };
 
