@@ -1,0 +1,85 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id              String            @id @default(uuid())
+  googleId        String            @unique
+  name            String
+  email           String            @unique
+  avatar          String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  senders         Sender[]
+  campaigns       EmailCampaign[]
+  slackConnection SlackConnection?
+}
+
+model Sender {
+  id          String          @id @default(uuid())
+  userId      String
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  email       String          @unique
+  displayName String?
+  createdAt   DateTime        @default(now())
+  campaigns   EmailCampaign[]
+}
+
+model EmailCampaign {
+  id                 String     @id @default(uuid())
+  userId             String
+  user               User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  senderId           String
+  sender             Sender     @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  subject            String
+  body               String
+  startTime          DateTime
+  delayBetweenEmails Int        // in milliseconds
+  hourlyLimit        Int        // hourly limit for sender
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+  jobs               EmailJob[]
+}
+
+enum JobStatus {
+  scheduled
+  processing
+  sent
+  failed
+}
+
+model EmailJob {
+  id           String        @id @default(uuid())
+  campaignId   String
+  campaign     EmailCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  recipient    String
+  subject      String
+  body         String
+  scheduledAt  DateTime
+  sentAt       DateTime?
+  status       JobStatus     @default(scheduled)
+  bullJobId    String?       @unique
+  attempts     Int           @default(0)
+  errorMessage String?
+  previewUrl   String?       // preview URL for Ethereal sent email
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@index([status])
+  @@index([scheduledAt])
+}
+
+model SlackConnection {
+  id          String   @id @default(uuid())
+  userId      String   @unique
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  slackUserId String?
+  accessToken String
+  connectedAt DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
