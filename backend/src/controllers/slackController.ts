@@ -16,28 +16,41 @@ export async function connectSlack(
     });
   }
 
-  // Use the userId as the state parameter
-  const state = req.user.id;
+  try {
+    // Use logged-in user ID as OAuth state
+    const state = req.user.id;
 
-  const params = new URLSearchParams({
-    client_id: env.SLACK_CLIENT_ID,
-    scope: 'chat:write',
-    redirect_uri: env.SLACK_CALLBACK_URL,
-    state,
-  });
+    // Build Slack OAuth parameters safely
+    const params = new URLSearchParams({
+      client_id: env.SLACK_CLIENT_ID,
+      scope: 'chat:write',
+      redirect_uri: env.SLACK_CALLBACK_URL,
+      state,
+    });
 
-  const slackAuthUrl =
-    `https://slack.com/oauth/v2/authorize?${params.toString()}`;
+    const slackAuthUrl =
+      `https://slack.com/oauth/v2/authorize?${params.toString()}`;
 
-  logger.info(
-    `Slack OAuth redirect URI: ${env.SLACK_CALLBACK_URL}`
-  );
+    logger.info(
+      `Slack OAuth redirect URI: ${env.SLACK_CALLBACK_URL}`
+    );
 
-  logger.info(
-    `Redirecting user ${req.user.id} to Slack OAuth authorization page`
-  );
+    logger.info(
+      `Redirecting user ${req.user.id} to Slack OAuth authorization page`
+    );
 
-  return res.redirect(slackAuthUrl);
+    return res.redirect(slackAuthUrl);
+  } catch (err: any) {
+    logger.error(
+      'Failed to create Slack OAuth URL',
+      err
+    );
+
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to connect Slack',
+    });
+  }
 }
 
 export async function slackCallbackHandler(
@@ -58,18 +71,44 @@ export async function slackCallbackHandler(
   }
 
   try {
-    const { accessToken, slackUserId } =
-      await exchangeSlackCode(code);
+    logger.info(
+      `Slack OAuth callback received for user: ${userId}`
+    );
 
+    logger.info(
+      `Slack OAuth callback redirect URI: ${env.SLACK_CALLBACK_URL}`
+    );
+
+    // Exchange authorization code for Slack access token
+    const {
+      accessToken,
+      slackUserId,
+    } = await exchangeSlackCode(code);
+
+    if (!accessToken) {
+      throw new Error(
+        'Slack access token was not returned'
+      );
+    }
+
+    if (!slackUserId) {
+      throw new Error(
+        'Slack user ID was not returned'
+      );
+    }
+
+    // Store / update Slack connection
     await prisma.slackConnection.upsert({
       where: {
         userId,
       },
+
       create: {
         userId,
         slackUserId,
         accessToken,
       },
+
       update: {
         slackUserId,
         accessToken,
@@ -123,6 +162,7 @@ export async function disconnectSlack(
       message: 'Slack disconnected successfully',
     });
   } catch (err: any) {
+    // If connection does not exist, treat it as already disconnected
     logger.warn(
       `Attempted to delete non-existent Slack connection for user ${req.user.id}`,
       err
@@ -130,7 +170,8 @@ export async function disconnectSlack(
 
     return res.json({
       success: true,
-      message: 'Slack was not connected or already disconnected',
+      message:
+        'Slack was not connected or already disconnected',
     });
   }
 }
@@ -152,6 +193,7 @@ export async function getSlackStatus(
         where: {
           userId: req.user.id,
         },
+
         select: {
           connectedAt: true,
           slackUserId: true,
@@ -160,15 +202,22 @@ export async function getSlackStatus(
 
     return res.json({
       success: true,
+
       data: {
         connected: !!connection,
         connection: connection || null,
       },
     });
   } catch (err: any) {
+    logger.error(
+      'Failed to get Slack connection status',
+      err
+    );
+
     return res.status(500).json({
       success: false,
       message: err.message,
     });
   }
 }
+
