@@ -24,7 +24,9 @@ export async function redirectToGoogle(req: Request, res: Response) {
   const qs = new URLSearchParams(options);
   const redirectUri = `${rootUrl}?${qs.toString()}`;
 
-  logger.info(`Redirecting to Google OAuth: ${env.GOOGLE_CALLBACK_URL}`);
+  logger.info(
+    `Redirecting to Google OAuth: ${env.GOOGLE_CALLBACK_URL}`
+  );
 
   res.redirect(redirectUri);
 }
@@ -43,7 +45,9 @@ export async function googleCallbackHandler(
     logger.warn(`Google OAuth returned an error: ${googleError}`);
 
     return res.redirect(
-      `${env.FRONTEND_URL}/login?error=${encodeURIComponent(googleError)}`
+      `${env.FRONTEND_URL}/login?error=${encodeURIComponent(
+        googleError
+      )}`
     );
   }
 
@@ -114,7 +118,9 @@ export async function googleCallbackHandler(
     const googleUser = userRes.data;
 
     logger.info(
-      `Google profile received for: ${googleUser.email || 'unknown email'}`
+      `Google profile received for: ${
+        googleUser.email || 'unknown email'
+      }`
     );
 
     if (!googleUser.email) {
@@ -201,7 +207,8 @@ export async function googleCallbackHandler(
     res.cookie('token', token, {
       httpOnly: true,
       secure: env.NODE_ENV === 'production',
-      sameSite: 'lax',
+      sameSite:
+        env.NODE_ENV === 'production' ? 'none' : 'lax',
       maxAge: 7 * 24 * 60 * 60 * 1000,
     });
 
@@ -213,7 +220,7 @@ export async function googleCallbackHandler(
     // 6. Redirect to frontend
     // ---------------------------------------------------------
 
-    res.redirect(env.FRONTEND_URL);
+    return res.redirect(env.FRONTEND_URL);
 
   } catch (err: any) {
     const errorDetails =
@@ -293,7 +300,8 @@ export async function logout(
   res.clearCookie('token', {
     httpOnly: true,
     secure: env.NODE_ENV === 'production',
-    sameSite: 'lax',
+    sameSite:
+      env.NODE_ENV === 'production' ? 'none' : 'lax',
   });
 
   return res.json({
