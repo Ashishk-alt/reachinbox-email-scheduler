@@ -17,22 +17,37 @@ export async function connectSlack(
   }
 
   try {
-    // Use logged-in user ID as OAuth state
+    /*
+     * Use the authenticated application user as OAuth state.
+     */
     const state = req.user.id;
 
-    // Build Slack OAuth parameters safely
-    const params = new URLSearchParams({
-      client_id: env.SLACK_CLIENT_ID,
-      scope: 'chat:write',
-      redirect_uri: env.SLACK_CALLBACK_URL,
-      state,
-    });
+    /*
+     * IMPORTANT:
+     *
+     * We intentionally DO NOT send redirect_uri here.
+     *
+     * Slack will use the Redirect URL configured in:
+     *
+     * Slack App
+     * -> OAuth & Permissions
+     * -> Redirect URLs
+     *
+     * This prevents the bad_redirect_uri mismatch during
+     * oauth.v2.access.
+     */
+
+    const params = new URLSearchParams();
+
+    params.append('client_id', env.SLACK_CLIENT_ID);
+    params.append('scope', 'chat:write');
+    params.append('state', state);
 
     const slackAuthUrl =
       `https://slack.com/oauth/v2/authorize?${params.toString()}`;
 
     logger.info(
-      `Slack OAuth redirect URI: ${env.SLACK_CALLBACK_URL}`
+      `Slack OAuth redirect URI configured on server: ${env.SLACK_CALLBACK_URL}`
     );
 
     logger.info(
@@ -42,8 +57,7 @@ export async function connectSlack(
     return res.redirect(slackAuthUrl);
   } catch (err: any) {
     logger.error(
-      'Failed to create Slack OAuth URL',
-      err
+      `Failed to create Slack OAuth URL: ${err?.message || err}`
     );
 
     return res.status(500).json({
@@ -57,12 +71,41 @@ export async function slackCallbackHandler(
   req: Request,
   res: Response
 ) {
-  const code = req.query.code as string;
-  const userId = req.query.state as string;
+  const code =
+    typeof req.query.code === 'string'
+      ? req.query.code
+      : '';
 
-  if (!code || !userId) {
+  const state =
+    typeof req.query.state === 'string'
+      ? req.query.state
+      : '';
+
+  /*
+   * Slack can return an OAuth error instead of a code.
+   */
+  const slackError =
+    typeof req.query.error === 'string'
+      ? req.query.error
+      : '';
+
+  logger.info(
+    `Slack OAuth callback received. code=${code ? 'present' : 'missing'}, state=${state ? 'present' : 'missing'}, error=${slackError || 'none'}`
+  );
+
+  if (slackError) {
+    logger.error(
+      `Slack OAuth returned error: ${slackError}`
+    );
+
+    return res.redirect(
+      `${env.FRONTEND_URL}?slack=failed`
+    );
+  }
+
+  if (!code || !state) {
     logger.warn(
-      'Slack OAuth callback hit with missing code or state parameters.'
+      'Slack OAuth callback received without code or state'
     );
 
     return res.redirect(
@@ -70,34 +113,31 @@ export async function slackCallbackHandler(
     );
   }
 
+  const userId = state;
+
   try {
     logger.info(
-      `Slack OAuth callback received for user: ${userId}`
+      `Processing Slack OAuth callback for user: ${userId}`
     );
 
-    logger.info(
-      `Slack OAuth callback redirect URI: ${env.SLACK_CALLBACK_URL}`
-    );
-
-    // Exchange authorization code for Slack access token
+    /*
+     * Exchange Slack's temporary authorization code
+     * for an access token.
+     *
+     * redirect_uri is intentionally NOT passed.
+     */
     const {
       accessToken,
       slackUserId,
     } = await exchangeSlackCode(code);
 
-    if (!accessToken) {
-      throw new Error(
-        'Slack access token was not returned'
-      );
-    }
+    logger.info(
+      `Slack token received successfully for user: ${userId}`
+    );
 
-    if (!slackUserId) {
-      throw new Error(
-        'Slack user ID was not returned'
-      );
-    }
-
-    // Store / update Slack connection
+    /*
+     * Save / update Slack connection.
+     */
     await prisma.slackConnection.upsert({
       where: {
         userId,
@@ -125,8 +165,7 @@ export async function slackCallbackHandler(
     );
   } catch (err: any) {
     logger.error(
-      'Slack OAuth callback processing failed',
-      err
+      `Slack OAuth callback processing failed: ${err?.message || err}`
     );
 
     return res.redirect(
@@ -162,16 +201,17 @@ export async function disconnectSlack(
       message: 'Slack disconnected successfully',
     });
   } catch (err: any) {
-    // If connection does not exist, treat it as already disconnected
+    /*
+     * If no Slack connection exists, treat it as already
+     * disconnected.
+     */
     logger.warn(
-      `Attempted to delete non-existent Slack connection for user ${req.user.id}`,
-      err
+      `Attempted to delete non-existent Slack connection for user ${req.user.id}`
     );
 
     return res.json({
       success: true,
-      message:
-        'Slack was not connected or already disconnected',
+      message: 'Slack was not connected or already disconnected',
     });
   }
 }
@@ -210,14 +250,14 @@ export async function getSlackStatus(
     });
   } catch (err: any) {
     logger.error(
-      'Failed to get Slack connection status',
-      err
+      `Failed to get Slack status: ${err?.message || err}`
     );
 
     return res.status(500).json({
       success: false,
-      message: err.message,
+      message: err?.message || 'Failed to get Slack status',
     });
   }
 }
+
 
