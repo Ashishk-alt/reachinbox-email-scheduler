@@ -29,22 +29,21 @@ import {
   RefreshCw,
 } from 'lucide-react';
 
+// Production backend URL
+const BACKEND_URL = 'https://reachinbox-email-scheduler-yd4h.onrender.com';
+
 export const App: React.FC = () => {
-  // App state
   const [user, setUser] = useState<UserProfile | null>(null);
   const [slackStatus, setSlackStatus] = useState<SlackStatus | null>(null);
   const [activeTab, setActiveTab] = useState<'scheduled' | 'sent'>('scheduled');
-  
-  // Lists
+
   const [scheduledJobs, setScheduledJobs] = useState<EmailJob[]>([]);
   const [sentJobs, setSentJobs] = useState<EmailJob[]>([]);
-  
-  // Search
+
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<EmailJob[] | null>(null);
   const [isSearching, setIsSearching] = useState(false);
 
-  // Pagination
   const [scheduledPage, setScheduledPage] = useState(1);
   const [sentPage, setSentPage] = useState(1);
   const [scheduledTotal, setScheduledTotal] = useState(0);
@@ -52,61 +51,105 @@ export const App: React.FC = () => {
   const [scheduledPages, setScheduledPages] = useState(1);
   const [sentPages, setSentPages] = useState(1);
 
-  // Loaders & Modal
   const [loadingProfile, setLoadingProfile] = useState(true);
   const [loadingEmails, setLoadingEmails] = useState(false);
   const [isComposeOpen, setIsComposeOpen] = useState(false);
 
-  // Toasts
-  const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [toast, setToast] = useState<{
+    type: 'success' | 'error';
+    message: string;
+  } | null>(null);
 
-  const showToast = (message: string, type: 'success' | 'error' = 'success') => {
+  const showToast = (
+    message: string,
+    type: 'success' | 'error' = 'success'
+  ) => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 4000);
   };
 
-  // 1. Check user login status on load
+  // Check authentication
   useEffect(() => {
     const initAuth = async () => {
       try {
         const profile = await getProfile();
         setUser(profile);
-        // If logged in, fetch Slack status
+
         const slack = await fetchSlackStatus();
         setSlackStatus(slack);
       } catch (err) {
-        // Not logged in, redirect to login state
         setUser(null);
       } finally {
         setLoadingProfile(false);
       }
     };
+
     initAuth();
   }, []);
 
-  // 2. Fetch emails when tab, page, or user changes
+  // Handle OAuth callback messages
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+
+    if (params.get('slack') === 'connected') {
+      showToast('Slack successfully connected!', 'success');
+
+      window.history.replaceState(
+        {},
+        document.title,
+        window.location.pathname
+      );
+
+      fetchSlackStatus().then(setSlackStatus);
+    } else if (params.get('slack') === 'failed') {
+      showToast('Slack connection aborted or failed.', 'error');
+
+      window.history.replaceState(
+        {},
+        document.title,
+        window.location.pathname
+      );
+    }
+
+    if (params.get('error') === 'oauth_failed') {
+      showToast(
+        'Google login failed. Please check the Google OAuth configuration.',
+        'error'
+      );
+
+      window.history.replaceState(
+        {},
+        document.title,
+        window.location.pathname
+      );
+    }
+  }, []);
+
+  // Fetch emails
   useEffect(() => {
     if (!user) return;
-    
-    // Clear search when switching tabs
+
     setSearchQuery('');
     setSearchResults(null);
 
     const loadEmails = async () => {
       setLoadingEmails(true);
+
       try {
         if (activeTab === 'scheduled') {
           const res = await fetchScheduledEmails(scheduledPage, 10);
+
           setScheduledJobs(res.data);
           setScheduledTotal(res.pagination.total);
           setScheduledPages(res.pagination.totalPages);
         } else {
           const res = await fetchSentEmails(sentPage, 10);
+
           setSentJobs(res.data);
           setSentTotal(res.pagination.total);
           setSentPages(res.pagination.totalPages);
         }
-      } catch (err: any) {
+      } catch (err) {
         showToast('Failed to load email jobs', 'error');
       } finally {
         setLoadingEmails(false);
@@ -116,77 +159,93 @@ export const App: React.FC = () => {
     loadEmails();
   }, [user, activeTab, scheduledPage, sentPage]);
 
-  // Handle URL redirect query params (e.g. from Slack OAuth callback redirect)
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('slack') === 'connected') {
-      showToast('Slack successfully connected!', 'success');
-      // Clean query params
-      window.history.replaceState({}, document.title, window.location.pathname);
-      // Refresh status
-      fetchSlackStatus().then(setSlackStatus);
-    } else if (params.get('slack') === 'failed') {
-      showToast('Slack connection aborted or failed.', 'error');
-      window.history.replaceState({}, document.title, window.location.pathname);
-    }
-  }, []);
-
+  // Google login
   const handleGoogleLogin = () => {
-    window.location.href = 'https://reachinbox-email-scheduler-yd4h.onrender.com/api/auth/google';
+    window.location.href = `${BACKEND_URL}/api/auth/google`;
   };
 
+  // Logout
   const handleLogout = async () => {
     try {
       await logoutUser();
+
       setUser(null);
       setSlackStatus(null);
+
       showToast('Logged out successfully');
     } catch (err) {
       showToast('Logout failed', 'error');
     }
   };
 
+  // Slack connect
   const handleConnectSlack = () => {
-    window.location.href = 'https://reachinbox-email-scheduler-yd4h.onrender.com/api/slack/connect';
+    window.location.href = `${BACKEND_URL}/api/slack/connect`;
   };
 
+  // Slack disconnect
   const handleDisconnectSlack = async () => {
-    if (!window.confirm('Are you sure you want to disconnect Slack? You will stop receiving sender rate limit warnings.')) {
+    if (
+      !window.confirm(
+        'Are you sure you want to disconnect Slack? You will stop receiving sender rate limit warnings.'
+      )
+    ) {
       return;
     }
+
     try {
       await disconnectSlack();
-      setSlackStatus({ connected: false, connection: null });
+
+      setSlackStatus({
+        connected: false,
+        connection: null,
+      });
+
       showToast('Slack disconnected successfully');
     } catch (err) {
       showToast('Failed to disconnect Slack', 'error');
     }
   };
 
+  // Schedule campaign
   const handleScheduleCampaign = async (payload: SchedulePayload) => {
-    await scheduleEmails(payload);
-    showToast('Campaign scheduled successfully');
-    // Refresh list
-    setScheduledPage(1);
-    const res = await fetchScheduledEmails(1, 10);
-    setScheduledJobs(res.data);
-    setScheduledTotal(res.pagination.total);
-    setScheduledPages(res.pagination.totalPages);
+    try {
+      await scheduleEmails(payload);
+
+      showToast('Campaign scheduled successfully');
+
+      setScheduledPage(1);
+
+      const res = await fetchScheduledEmails(1, 10);
+
+      setScheduledJobs(res.data);
+      setScheduledTotal(res.pagination.total);
+      setScheduledPages(res.pagination.totalPages);
+    } catch (err) {
+      showToast('Failed to schedule campaign', 'error');
+      throw err;
+    }
   };
 
+  // Search
   const handleSearchSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
     if (!searchQuery.trim()) {
       setSearchResults(null);
       return;
     }
 
     setIsSearching(true);
+
     try {
       const results = await searchEmails(searchQuery);
       setSearchResults(results);
     } catch (err) {
-      showToast('Search indexing service failed or unavailable', 'error');
+      showToast(
+        'Search indexing service failed or unavailable',
+        'error'
+      );
     } finally {
       setIsSearching(false);
     }
@@ -197,20 +256,25 @@ export const App: React.FC = () => {
     setSearchResults(null);
   };
 
+  // Refresh
   const triggerRefresh = async () => {
     setLoadingEmails(true);
+
     try {
       if (activeTab === 'scheduled') {
         const res = await fetchScheduledEmails(scheduledPage, 10);
+
         setScheduledJobs(res.data);
         setScheduledTotal(res.pagination.total);
         setScheduledPages(res.pagination.totalPages);
       } else {
         const res = await fetchSentEmails(sentPage, 10);
+
         setSentJobs(res.data);
         setSentTotal(res.pagination.total);
         setSentPages(res.pagination.totalPages);
       }
+
       showToast('Data refreshed');
     } catch (err) {
       showToast('Refresh failed', 'error');
@@ -219,16 +283,19 @@ export const App: React.FC = () => {
     }
   };
 
-  // Rendering loading state for initial profile fetch
+  // Loading
   if (loadingProfile) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50">
-        <Loader size="lg" label="Loading ReachInbox Scheduler..." />
+        <Loader
+          size="lg"
+          label="Loading ReachInbox Scheduler..."
+        />
       </div>
     );
   }
 
-  // Rendering Login Page if unauthenticated
+  // Login page
   if (!user) {
     return (
       <div className="min-h-screen flex flex-col justify-center py-12 sm:px-6 lg:px-8 bg-slate-50">
@@ -236,9 +303,11 @@ export const App: React.FC = () => {
           <div className="flex justify-center text-brand-600">
             <Mail className="h-12 w-12" />
           </div>
+
           <h2 className="mt-6 text-center text-3xl font-extrabold text-slate-900 tracking-tight">
             ReachInbox
           </h2>
+
           <p className="mt-2 text-center text-sm text-slate-500 font-medium">
             Full-Stack Email Job Scheduler
           </p>
@@ -246,23 +315,31 @@ export const App: React.FC = () => {
 
         <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
           <div className="bg-white py-8 px-4 shadow-xl border border-slate-100 rounded-xl sm:px-10 text-center">
-            <h3 className="text-md font-semibold text-slate-800 mb-6">Sign in to your Workspace</h3>
+            <h3 className="text-md font-semibold text-slate-800 mb-6">
+              Sign in to your Workspace
+            </h3>
+
             <button
               onClick={handleGoogleLogin}
               className="w-full flex items-center justify-center gap-3 px-4 py-3 border border-slate-200 rounded-lg shadow-xs bg-white text-sm font-semibold text-slate-700 hover:bg-slate-50 focus:outline-hidden focus:ring-2 focus:ring-offset-2 focus:ring-brand-500 transition-colors cursor-pointer"
             >
-              <svg className="h-5 w-5" viewBox="0 0 24 24" width="24" height="24">
+              <svg
+                className="h-5 w-5"
+                viewBox="0 0 24 24"
+                width="24"
+                height="24"
+              >
                 <g transform="matrix(1, 0, 0, 1, 0, 0)">
                   <path
                     d="M21.35,11.1H12v2.7h5.38C16.88,15.69,14.8,17,12,17c-3.18,0-5.7-2.31-5.7-5.5s2.52-5.5,5.7-5.5c1.69,0,3,0.61,4,1.48l2.1-2.1C16.48,3.79,14.43,3,12,3c-4.97,0-9,4.03-9,9s4.03,9,9,9c4.54,0,8.55-3.3,8.55-9C20.55,11.69,20.43,11.39,21.35,11.1Z"
                     fill="#4285F4"
                   />
                   <path
-                    d="M3.55,14.85l2.67-1.92A5.44,5.44,0,0,1,6.3,12c0-.3.05-.59,0.15-0.9L3.78,9.15A8.99,8.99,0,0,0,3,12,8.99,8.99,0,0,0,3.55,14.85Z"
+                    d="M3.55,14.85l2.67-1.92A5.44,5.44,0,0,1,6.3,12c0-.3.05-.59.15-.9L3.78,9.15A8.99,8.99,0,0,0,3,12,8.99,8.99,0,0,0,3.55,14.85Z"
                     fill="#FBBC05"
                   />
                   <path
-                    d="M12,6.3c1.69,0,3,.61,4,1.48l2.1-2.1C16.48,3.79,14.43,3,12,3c-4.97,0-9,4.03-9,9,0,.3,0,0.6,0.05,0.9L6.42,11.1A5.46,5.46,0,0,1,12,6.3Z"
+                    d="M12,6.3c1.69,0,3,.61,4,1.48l2.1-2.1C16.48,3.79,14.43,3,12,3c-4.97,0-9,4.03-9,9,0,.3,0,.6,0.05,0.9L6.42,11.1A5.46,5.46,0,0,1,12,6.3Z"
                     fill="#EA4335"
                   />
                   <path
@@ -271,11 +348,15 @@ export const App: React.FC = () => {
                   />
                 </g>
               </svg>
+
               <span>Continue with Google</span>
             </button>
+
             <div className="mt-8 pt-6 border-t border-slate-100 flex flex-col gap-2 items-center text-[10px] text-slate-400">
               <span>Evaluating Intern Code Project</span>
-              <span>ReachInbox Email Scheduler &bull; 2026</span>
+              <span>
+                ReachInbox Email Scheduler &bull; 2026
+              </span>
             </div>
           </div>
         </div>
@@ -285,7 +366,7 @@ export const App: React.FC = () => {
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-50 pb-12">
-      {/* Toast Notification */}
+      {/* Toast */}
       {toast && (
         <div className="fixed bottom-5 right-5 z-50 flex items-center gap-2.5 rounded-lg border px-4 py-3 shadow-xl transition-all animate-bounce bg-white border-slate-100 max-w-sm">
           {toast.type === 'success' ? (
@@ -293,7 +374,10 @@ export const App: React.FC = () => {
           ) : (
             <AlertCircle className="h-5 w-5 text-rose-600 shrink-0" />
           )}
-          <span className="text-sm font-semibold text-slate-800">{toast.message}</span>
+
+          <span className="text-sm font-semibold text-slate-800">
+            {toast.message}
+          </span>
         </div>
       )}
 
@@ -301,13 +385,11 @@ export const App: React.FC = () => {
       <header className="bg-white border-b border-slate-200/80 sticky top-0 z-40">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="flex h-16 items-center justify-between">
-            {/* Logo */}
             <div className="flex items-center gap-2 text-brand-600 font-extrabold text-lg tracking-tight">
               <Mail className="h-6 w-6" />
               <span>ReachInbox</span>
             </div>
 
-            {/* Profile & Actions */}
             <div className="flex items-center gap-4">
               <div className="flex items-center gap-2.5 border-r border-slate-200 pr-4">
                 {user.avatar ? (
@@ -321,9 +403,15 @@ export const App: React.FC = () => {
                     {user.name.slice(0, 2)}
                   </div>
                 )}
+
                 <div className="hidden sm:flex flex-col text-left">
-                  <span className="text-sm font-bold text-slate-800 leading-tight">{user.name}</span>
-                  <span className="text-xs text-slate-400 font-medium leading-none">{user.email}</span>
+                  <span className="text-sm font-bold text-slate-800 leading-tight">
+                    {user.name}
+                  </span>
+
+                  <span className="text-xs text-slate-400 font-medium leading-none">
+                    {user.email}
+                  </span>
                 </div>
               </div>
 
@@ -339,17 +427,19 @@ export const App: React.FC = () => {
         </div>
       </header>
 
-      {/* Main Container */}
+      {/* Main */}
       <main className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 mt-8 flex-1 w-full space-y-6">
-        {/* Slack Connection banner */}
+        {/* Slack */}
         <div className="rounded-xl border border-slate-200 bg-white p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-xs">
           <div className="flex gap-3">
             <div className="rounded-lg bg-indigo-50 border border-indigo-100 p-2 text-indigo-700 shrink-0">
               <Slack className="h-6 w-6" />
             </div>
+
             <div className="space-y-0.5">
               <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
                 Slack Rate Limit Warnings
+
                 {slackStatus?.connected ? (
                   <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 border border-emerald-200 uppercase">
                     Connected
@@ -360,8 +450,11 @@ export const App: React.FC = () => {
                   </span>
                 )}
               </h3>
+
               <p className="text-xs text-slate-500 max-w-xl font-medium">
-                Connect your Slack workspace. We will ping you instantly via Slack DM when your email senders breach their hourly rate limit cap.
+                Connect your Slack workspace. We will ping you instantly via
+                Slack DM when your email senders breach their hourly rate
+                limit cap.
               </p>
             </div>
           </div>
@@ -386,9 +479,8 @@ export const App: React.FC = () => {
           </div>
         </div>
 
-        {/* Dashboard Shell Controls */}
+        {/* Controls */}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-slate-200/80 pb-5">
-          {/* Tabs */}
           <div className="flex gap-2">
             <button
               onClick={() => setActiveTab('scheduled')}
@@ -400,6 +492,7 @@ export const App: React.FC = () => {
             >
               <Calendar className="h-4 w-4" />
               <span>Scheduled Emails</span>
+
               {scheduledTotal > 0 && (
                 <span className="ml-1 rounded-full bg-brand-100/80 px-2 py-0.5 text-[10px] font-bold text-brand-600">
                   {scheduledTotal}
@@ -417,6 +510,7 @@ export const App: React.FC = () => {
             >
               <Send className="h-4 w-4" />
               <span>Sent Emails</span>
+
               {sentTotal > 0 && (
                 <span className="ml-1 rounded-full bg-brand-100/80 px-2 py-0.5 text-[10px] font-bold text-brand-600">
                   {sentTotal}
@@ -425,10 +519,11 @@ export const App: React.FC = () => {
             </button>
           </div>
 
-          {/* Action Row */}
           <div className="flex items-center gap-3">
-            {/* Elasticsearch Search Input */}
-            <form onSubmit={handleSearchSubmit} className="relative flex items-center">
+            <form
+              onSubmit={handleSearchSubmit}
+              className="relative flex items-center"
+            >
               <input
                 type="text"
                 placeholder="Search recipient, subject..."
@@ -436,7 +531,9 @@ export const App: React.FC = () => {
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="w-full sm:w-64 rounded-lg border border-slate-200 bg-white pl-9 pr-8 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-brand-500 focus:outline-hidden focus:ring-2 focus:ring-brand-500/20"
               />
+
               <Search className="absolute left-3.5 h-3.5 w-3.5 text-slate-400 pointer-events-none" />
+
               {searchQuery && (
                 <button
                   type="button"
@@ -466,12 +563,14 @@ export const App: React.FC = () => {
           </div>
         </div>
 
-        {/* Search Header Banner */}
+        {/* Search results */}
         {searchResults !== null && (
           <div className="flex items-center justify-between rounded-lg bg-brand-50/50 border border-brand-100 px-4.5 py-3 text-xs text-brand-800 font-medium">
             <span>
-              Search Results in <b>{activeTab}</b> database matching "<b>{searchQuery}</b>" (Found {searchResults.length} records)
+              Search Results in <b>{activeTab}</b> database matching "
+              <b>{searchQuery}</b>" (Found {searchResults.length} records)
             </span>
+
             <button
               onClick={clearSearch}
               className="font-bold underline hover:text-brand-900"
@@ -481,9 +580,15 @@ export const App: React.FC = () => {
           </div>
         )}
 
-        {/* Emails Table */}
+        {/* Emails */}
         <EmailsTable
-          jobs={searchResults !== null ? searchResults : activeTab === 'scheduled' ? scheduledJobs : sentJobs}
+          jobs={
+            searchResults !== null
+              ? searchResults
+              : activeTab === 'scheduled'
+              ? scheduledJobs
+              : sentJobs
+          }
           type={activeTab}
           loading={loadingEmails || isSearching}
           pagination={
@@ -506,7 +611,7 @@ export const App: React.FC = () => {
         />
       </main>
 
-      {/* Compose Email Modal popup */}
+      {/* Compose */}
       <ComposeModal
         isOpen={isComposeOpen}
         onClose={() => setIsComposeOpen(false)}

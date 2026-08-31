@@ -1,5 +1,5 @@
 import axios from 'axios';
-const API_BASE_URL = 'https://reachinbox-email-scheduler-yd4h.onrender.com/api';
+const API_BASE_URL = 'https://reachinbox-email-scheduler-1-jt5g.onrender.com';
 
 const api = axios.create({
   baseURL: API_BASE_URL,
