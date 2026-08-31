@@ -120,6 +120,7 @@ Google OAuth → Authentication
 Slack OAuth → Slack connection → Rate-limit notification
 
 Bull Board → BullMQ queue monitoring
+
 4. Email Scheduling Flow
 
 When a user schedules a campaign, the following process takes place:
@@ -517,7 +518,6 @@ reachinbox-email-scheduler/
 
 22. Environment Variables
 
-
 Backend .env example:
 
 PORT=5000
@@ -633,11 +633,9 @@ Slack rate-limit notification
 Google OAuth
 Elasticsearch search
 Bull Board
-Ethereal email delivery
+Ethereal email delivery (local environment)
 Restart persistence
 Duplicate-processing protection
-
-The final deployed version should be tested again using the deployed frontend and backend URLs.
 
 26. Demo Flow
 
@@ -691,9 +689,14 @@ Idempotency	Database state checks
 Restart test	Verified during development
 
 28. Assumptions and Trade-offs
+
 Ethereal SMTP
 
 Ethereal is used for testing because the assignment requires fake SMTP. It is not intended to be a production email delivery provider.
+
+Render Deployment / SMTP
+
+The deployed Render instance uses the free tier, which blocks outbound SMTP traffic on all ports (25, 465, 587) at the network level — this is a platform restriction, not an application bug (confirmed via Render logs: the connection times out rather than failing authentication, and the same code with the same credentials sends successfully in the local environment). As a result, live email sending only works locally, which is demonstrated in the demo video. All other functionality — Google OAuth, dashboard, scheduling, BullMQ persistence, rate limiting, Slack notifications, and Elasticsearch search — works identically on the deployed instance.
 
 PostgreSQL as the source of truth
 
@@ -726,11 +729,11 @@ No credentials committed to the repository
 
 For a production deployment, additional measures such as HTTPS, secret rotation, stronger session policies, audit logging, and more detailed access controls would be recommended.
 
-
 30. Final Notes
 
 This project was developed specifically around the scheduling and reliability requirements of the ReachInbox assignment.
 
 The main design decision was to keep persistent application state in PostgreSQL and use Redis/BullMQ for asynchronous scheduling and processing. This separates the database state from the worker process and makes the scheduler more resilient to restarts.
+
 
 
