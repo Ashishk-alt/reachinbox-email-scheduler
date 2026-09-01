@@ -1,4 +1,3 @@
-
 import { Response } from 'express';
 import { prisma } from '../config/db';
 import { logger } from '../utils/logger';
@@ -10,7 +9,6 @@ import {
 import { AuthenticatedRequest } from '../middleware/authMiddleware';
 import { z } from 'zod';
 
-// Zod validation schema for scheduling payload
 const scheduleSchema = z.object({
   senderId: z.string().uuid('Invalid senderId'),
   subject: z.string().min(1, 'Subject is required'),
@@ -63,7 +61,6 @@ export async function scheduleEmails(
   } = parsedBody.data;
 
   try {
-    // 1. Validate sender ownership
     const sender = await prisma.sender.findFirst({
       where: {
         id: senderId,
@@ -79,8 +76,6 @@ export async function scheduleEmails(
       });
     }
 
-    // Ensure start time is not too far in the past
-    // Allow a 60-second window for clock drift
     const minStartTime = new Date(Date.now() - 60000);
 
     if (startTime < minStartTime) {
@@ -90,8 +85,10 @@ export async function scheduleEmails(
       });
     }
 
-    // 2. Insert EmailCampaign and EmailJobs into PostgreSQL
-    //    in a single transaction
+    // ============================================================
+    // 1. CREATE CAMPAIGN + EMAIL JOBS
+    // ============================================================
+
     const { campaign, jobs } = await prisma.$transaction(
       async (tx) => {
         const newCampaign = await tx.emailCampaign.create({
@@ -107,7 +104,6 @@ export async function scheduleEmails(
         });
 
         const jobData = recipients.map((recipient, index) => {
-          // Calculate delayed schedule time for each recipient
           const scheduledTime = new Date(
             startTime.getTime() +
               index * delayBetweenEmails
@@ -123,12 +119,10 @@ export async function scheduleEmails(
           };
         });
 
-        // Bulk create EmailJobs
         await tx.emailJob.createMany({
           data: jobData,
         });
 
-        // Query jobs back to get their IDs
         const createdJobs = await tx.emailJob.findMany({
           where: {
             campaignId: newCampaign.id,
@@ -150,19 +144,105 @@ export async function scheduleEmails(
     );
 
     // ============================================================
-    // 3. INDEX SCHEDULED EMAILS INTO ELASTICSEARCH
+    // 2. ENQUEUE EVERY JOB INTO BULLMQ
     // ============================================================
+
+    const enqueuePromises = jobs.map(async (job) => {
+      const delayMs = Math.max(
+        0,
+        job.scheduledAt.getTime() - Date.now()
+      );
+
+      try {
+        logger.info(
+          `Attempting to enqueue EmailJob ${job.id} into BullMQ...`
+        );
+
+        const bullJob = await enqueueEmail(
+          job.id,
+          delayMs
+        );
+
+        if (!bullJob || !bullJob.id) {
+          throw new Error(
+            'BullMQ did not return a valid job ID'
+          );
+        }
+
+        await prisma.emailJob.update({
+          where: {
+            id: job.id,
+          },
+          data: {
+            bullJobId: bullJob.id,
+          },
+        });
+
+        logger.info(
+          `✅ Email job ${job.id} enqueued to BullMQ. BullMQ ID: ${bullJob.id}. Delay: ${delayMs}ms`
+        );
+
+        return {
+          job,
+          bullJob,
+        };
+      } catch (err: any) {
+        logger.error(
+          `❌ Error enqueuing job ${job.id} into BullMQ: ${
+            err?.message || err
+          }`
+        );
+
+        try {
+          await prisma.emailJob.update({
+            where: {
+              id: job.id,
+            },
+            data: {
+              status: 'failed',
+            },
+          });
+        } catch (dbError: any) {
+          logger.error(
+            `❌ Failed to mark EmailJob ${job.id} as failed: ${
+              dbError?.message || dbError
+            }`
+          );
+        }
+
+        throw err;
+      }
+    });
+
+    let enqueueResults;
+
+    try {
+      enqueueResults = await Promise.all(
+        enqueuePromises
+      );
+    } catch (err: any) {
+      logger.error(
+        `❌ BullMQ enqueue failed for campaign ${campaign.id}: ${
+          err?.message || err
+        }`
+      );
+
+      return res.status(500).json({
+        success: false,
+        message:
+          'Campaign was created, but one or more emails could not be added to the email queue.',
+        error: err?.message || String(err),
+        data: {
+          campaignId: campaign.id,
+        },
+      });
+    }
+
+    // ============================================================
+    // 3. INDEX INTO ELASTICSEARCH
     //
-    // The Elasticsearch indexEmailJob() function expects:
-    //
-    // emailJob.campaign.senderId
-    // emailJob.campaign.userId
-    //
-    // The campaign returned above contains both values, so we
-    // attach the campaign object to each job before indexing.
-    //
-    // This ensures scheduled emails are searchable in Elasticsearch
-    // immediately after they are created.
+    // Elasticsearch is NOT part of the critical queue path.
+    // A search-index failure must not prevent email delivery.
     // ============================================================
 
     const indexingPromises = jobs.map(async (job) => {
@@ -176,63 +256,24 @@ export async function scheduleEmails(
           `Scheduled email job ${job.id} indexed in Elasticsearch.`
         );
       } catch (err: any) {
-        // indexEmailJob already handles its own errors, but this
-        // protects the scheduling flow if its implementation changes.
         logger.error(
-          `Failed to index scheduled email job ${job.id} in Elasticsearch`,
-          err
+          `Failed to index scheduled email job ${job.id} in Elasticsearch: ${
+            err?.message || err
+          }`
         );
       }
     });
 
     await Promise.all(indexingPromises);
 
+    logger.info(
+      `🎉 Campaign ${campaign.id} successfully scheduled. ${enqueueResults.length} BullMQ jobs created.`
+    );
+
     // ============================================================
-    // 4. ENQUEUE TO BULLMQ AFTER DATABASE COMMIT
-    // ============================================================
-    //
-    // This prevents the worker from trying to process a job
-    // before the PostgreSQL transaction has completed.
-    //
-    // We also update each job with its BullMQ job ID.
+    // 4. RESPONSE
     // ============================================================
 
-    const enqueuePromises = jobs.map(async (job) => {
-      try {
-        const delayMs = Math.max(
-          0,
-          job.scheduledAt.getTime() - Date.now()
-        );
-
-        const bullJob = await enqueueEmail(
-          job.id,
-          delayMs
-        );
-
-        // Update database with active BullMQ Job ID
-        await prisma.emailJob.update({
-          where: {
-            id: job.id,
-          },
-          data: {
-            bullJobId: bullJob.id,
-          },
-        });
-
-        logger.info(
-          `Email job ${job.id} enqueued to BullMQ with delay ${delayMs}ms.`
-        );
-      } catch (err: any) {
-        logger.error(
-          `Error enqueuing job ${job.id} into BullMQ`,
-          err
-        );
-      }
-    });
-
-    await Promise.all(enqueuePromises);
-
-    // 5. Return successful response
     return res.status(201).json({
       success: true,
       message: `${jobs.length} emails scheduled successfully`,
@@ -243,14 +284,16 @@ export async function scheduleEmails(
     });
   } catch (err: any) {
     logger.error(
-      'Failed to schedule email campaign',
-      err
+      `❌ Failed to schedule email campaign: ${
+        err?.message || err
+      }`
     );
 
     return res.status(500).json({
       success: false,
       message:
-        'Failed to schedule campaign: ' + err.message,
+        'Failed to schedule campaign: ' +
+        (err?.message || String(err)),
     });
   }
 }
@@ -328,7 +371,7 @@ export async function getScheduled(
   } catch (err: any) {
     return res.status(500).json({
       success: false,
-      message: err.message,
+      message: err?.message || String(err),
     });
   }
 }
@@ -402,7 +445,7 @@ export async function getSent(
   } catch (err: any) {
     return res.status(500).json({
       success: false,
-      message: err.message,
+      message: err?.message || String(err),
     });
   }
 }
@@ -440,7 +483,7 @@ export async function searchEmailsController(
   } catch (err: any) {
     return res.status(500).json({
       success: false,
-      message: err.message,
+      message: err?.message || String(err),
     });
   }
 }

@@ -1,4 +1,4 @@
-import { processEmailJob } from '../src/workers/emailWorker';
+import { processEmailJob, recoverStaleProcessingJobs } from '../src/workers/emailWorker';
 import { prisma } from '../src/config/db';
 import { redisClient } from '../src/config/redis';
 import { sendMail } from '../src/services/emailService';
@@ -9,6 +9,8 @@ jest.mock('../src/config/db', () => ({
   prisma: {
     $transaction: jest.fn(),
     emailJob: {
+      findMany: jest.fn(),
+      findUnique: jest.fn(),
       update: jest.fn(),
     },
   },
@@ -50,10 +52,34 @@ describe('Worker Processing Lifecycle Tests', () => {
     jest.clearAllMocks();
   });
 
+  it('should recover stale jobs stuck in processing and requeue them', async () => {
+    (prisma.emailJob.findMany as jest.Mock).mockResolvedValue([
+      {
+        id: 'email-job-123',
+        scheduledAt: new Date(Date.now() + 2000),
+      },
+    ]);
+
+    await recoverStaleProcessingJobs();
+
+    expect(prisma.emailJob.update).toHaveBeenCalledWith({
+      where: { id: 'email-job-123' },
+      data: {
+        status: 'scheduled',
+        errorMessage: null,
+      },
+    });
+
+    expect(enqueueEmail).toHaveBeenCalledWith(
+      'email-job-123',
+      expect.any(Number)
+    );
+  });
+
   it('should skip job execution if the email job status is already sent', async () => {
-    (prisma.$transaction as jest.Mock).mockResolvedValue({
-      skip: true,
-      record: { id: 'email-job-123', status: 'sent' },
+    (prisma.emailJob.findUnique as jest.Mock).mockResolvedValue({
+      id: 'email-job-123',
+      status: 'sent',
     });
 
     await processEmailJob(mockJob);
@@ -62,18 +88,29 @@ describe('Worker Processing Lifecycle Tests', () => {
     expect(sendMail).not.toHaveBeenCalled();
   });
 
-  it('should skip job execution if the email job status is already processing (concurrency/idempotency safety)', async () => {
-    (prisma.$transaction as jest.Mock).mockResolvedValue({
-      skip: true,
-      record: { id: 'email-job-123', status: 'processing' },
+  it('should process a job that was previously left in processing state', async () => {
+    (prisma.emailJob.findUnique as jest.Mock).mockResolvedValue({
+      id: 'email-job-123',
+      status: 'processing',
+      recipient: 'user@example.com',
+      subject: 'Test Subject',
+      body: 'Test Body',
+      campaign: {
+        hourlyLimit: 50,
+        sender: { id: 'sender-1', email: 'sender@example.com', displayName: 'Sender' },
+        user: { slackConnection: null },
+      },
     });
+    (redisClient.get as jest.Mock).mockResolvedValue(null);
+    (redisClient.incr as jest.Mock).mockResolvedValue(1);
+    (sendMail as jest.Mock).mockResolvedValue({ messageId: 'message-123' });
 
     await processEmailJob(mockJob);
 
-    expect(sendMail).not.toHaveBeenCalled();
+    expect(sendMail).toHaveBeenCalled();
   });
 
-  it('should reschedule job and trigger Slack notification when sender reaches their hourly rate limit', async () => {
+  it('should send a due job directly even when the configured hourly limit is reached', async () => {
     const mockEmailJobRecord = {
       id: 'email-job-123',
       status: 'scheduled',
@@ -91,10 +128,7 @@ describe('Worker Processing Lifecycle Tests', () => {
       },
     };
 
-    (prisma.$transaction as jest.Mock).mockResolvedValue({
-      skip: false,
-      record: mockEmailJobRecord,
-    });
+    (prisma.emailJob.findUnique as jest.Mock).mockResolvedValue(mockEmailJobRecord);
 
     // Mock last send and slack notifications
     (redisClient.get as jest.Mock).mockImplementation((key) => {
@@ -103,29 +137,28 @@ describe('Worker Processing Lifecycle Tests', () => {
       return null;
     });
 
-    // Mock incr returning 11 (exceeding hourlyLimit = 10)
+    // Mock a count above the configured limit. Due jobs still send directly.
     (redisClient.incr as jest.Mock).mockResolvedValue(11);
+    (sendMail as jest.Mock).mockResolvedValue({
+      messageId: 'ethereal-message-123',
+    });
 
     await processEmailJob(mockJob);
 
-    // Verify database state reverts back to scheduled
+    // Verify the job is sent instead of being postponed.
     expect(prisma.emailJob.update).toHaveBeenCalledWith({
       where: { id: 'email-job-123' },
-      data: { status: 'scheduled' },
+      data: {
+        status: 'sent',
+        sentAt: expect.any(Date),
+        previewUrl: null,
+        errorMessage: null,
+      },
+      include: { campaign: true },
     });
 
-    // Verify rate limit count is decremented back
-    expect(redisClient.decr).toHaveBeenCalled();
-
-    // Verify BullMQ rescheduled enqueuing occurred
-    expect(enqueueEmail).toHaveBeenCalledWith('email-job-123', expect.any(Number));
-
-    // Verify Slack warning was dispatched
-    expect(sendSlackNotification).toHaveBeenCalledWith(
-      'slack-token-abc',
-      'slack-user-xyz',
-      expect.stringContaining('hourly limit')
-    );
+    expect(enqueueEmail).not.toHaveBeenCalled();
+    expect(sendSlackNotification).not.toHaveBeenCalled();
   });
 
   it('should send email and mark it as sent in DB when rate limits and delays are respected', async () => {
@@ -143,10 +176,7 @@ describe('Worker Processing Lifecycle Tests', () => {
       },
     };
 
-    (prisma.$transaction as jest.Mock).mockResolvedValue({
-      skip: false,
-      record: mockEmailJobRecord,
-    });
+    (prisma.emailJob.findUnique as jest.Mock).mockResolvedValue(mockEmailJobRecord);
 
     (redisClient.get as jest.Mock).mockResolvedValue(null);
     (redisClient.incr as jest.Mock).mockResolvedValue(1); // Under limit
@@ -171,13 +201,14 @@ describe('Worker Processing Lifecycle Tests', () => {
       body: 'Test Body',
     });
 
-    // Verify database status updated to sent with preview URL
+    // Verify the job moves directly to sent without persisting processing
     expect(prisma.emailJob.update).toHaveBeenCalledWith({
       where: { id: 'email-job-123' },
       data: {
         status: 'sent',
         sentAt: expect.any(Date),
         previewUrl: 'https://ethereal.email/message/abc',
+        errorMessage: null,
       },
       include: { campaign: true },
     });

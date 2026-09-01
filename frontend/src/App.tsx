@@ -29,8 +29,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 
-// Production backend URL
-const BACKEND_URL = 'https://reachinbox-email-scheduler-yd4h.onrender.com';
+const BACKEND_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api';
 
 export const App: React.FC = () => {
   const [user, setUser] = useState<UserProfile | null>(null);
@@ -132,8 +131,10 @@ export const App: React.FC = () => {
     setSearchQuery('');
     setSearchResults(null);
 
-    const loadEmails = async () => {
-      setLoadingEmails(true);
+    const loadEmails = async (showLoader = true) => {
+      if (showLoader) {
+        setLoadingEmails(true);
+      }
 
       try {
         if (activeTab === 'scheduled') {
@@ -150,18 +151,28 @@ export const App: React.FC = () => {
           setSentPages(res.pagination.totalPages);
         }
       } catch (err) {
-        showToast('Failed to load email jobs', 'error');
+        if (showLoader) {
+          showToast('Failed to load email jobs', 'error');
+        }
       } finally {
-        setLoadingEmails(false);
+        if (showLoader) {
+          setLoadingEmails(false);
+        }
       }
     };
 
     loadEmails();
+
+    const refreshTimer = window.setInterval(() => {
+      loadEmails(false);
+    }, 3000);
+
+    return () => window.clearInterval(refreshTimer);
   }, [user, activeTab, scheduledPage, sentPage]);
 
   // Google login
   const handleGoogleLogin = () => {
-    window.location.href = `${BACKEND_URL}/api/auth/google`;
+    window.location.href = `${BACKEND_URL}/auth/google`;
   };
 
   // Logout
@@ -180,7 +191,7 @@ export const App: React.FC = () => {
 
   // Slack connect
   const handleConnectSlack = () => {
-    window.location.href = `${BACKEND_URL}/api/slack/connect`;
+    window.location.href = `${BACKEND_URL}/slack/connect`;
   };
 
   // Slack disconnect

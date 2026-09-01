@@ -1,32 +1,63 @@
-import { app } from './app';
+import express from 'express';
+import cors from 'cors';
 import { env } from './config/env';
 import { logger } from './utils/logger';
-import { createIndexIfNotExists } from './services/searchService';
-import { startEmailWorker } from './workers/emailWorker';
+import {
+  reconcileScheduledJobs,
+  startEmailWorker,
+} from './workers/emailWorker';
+
+import authRoutes from './routes/authRoutes';
+import emailRoutes from './routes/emailRoutes';
+import adminRoutes from './routes/adminRoutes';
+import healthRoutes from './routes/healthRoutes';
+import slackRoutes from './routes/slackRoutes';
+
+const app = express();
+
+app.use(
+  cors({
+    origin: true,
+    credentials: true,
+  })
+);
+
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+app.use('/api/auth', authRoutes);
+app.use('/api/emails', emailRoutes);
+app.use('/api/admin', adminRoutes);
+app.use('/api/health', healthRoutes);
+app.use('/api/slack', slackRoutes);
+
+const PORT = Number(env.PORT || 5000);
+
+let workerStarted = false;
+let serverStarted = false;
 
 async function startServer() {
   try {
-    // ---------------------------------------------------------
-    // 1. Ensure Elasticsearch index exists
-    // ---------------------------------------------------------
+    await reconcileScheduledJobs();
 
-    await createIndexIfNotExists();
+    if (!workerStarted) {
+      startEmailWorker();
+      workerStarted = true;
 
-    // ---------------------------------------------------------
-    // 2. Start BullMQ Email Worker
-    // ---------------------------------------------------------
-
-    startEmailWorker();
-
-    logger.info('📨 BullMQ Email Worker started successfully.');
-
-    // ---------------------------------------------------------
-    // 3. Start Express API Server
-    // ---------------------------------------------------------
-
-    const server = app.listen(env.PORT, () => {
       logger.info(
-        `🚀 Express Server running in [${env.NODE_ENV}] mode on port ${env.PORT}`
+        '📨 BullMQ Email Worker started successfully.'
+      );
+    }
+
+    if (serverStarted) {
+      return;
+    }
+
+    const server = app.listen(PORT, '0.0.0.0', () => {
+      serverStarted = true;
+
+      logger.info(
+        `🚀 Express Server running in [${env.NODE_ENV || 'development'}] mode on port ${PORT}`
       );
 
       logger.info(
@@ -34,24 +65,37 @@ async function startServer() {
       );
     });
 
-    // ---------------------------------------------------------
-    // 4. Graceful Shutdown
-    // ---------------------------------------------------------
+    server.on('error', (error: NodeJS.ErrnoException) => {
+      if (error.code === 'EADDRINUSE') {
+        logger.error(
+          `❌ Port ${PORT} is already in use.`
+        );
+      } else {
+        logger.error(
+          '❌ HTTP server error',
+          error
+        );
+      }
+    });
 
-    const handleExit = () => {
+    const shutdown = async () => {
       logger.info('Shutting down server...');
 
       server.close(() => {
         logger.info('HTTP server closed.');
-        process.exit(0);
       });
+
+      process.exit(0);
     };
 
-    process.on('SIGTERM', handleExit);
-    process.on('SIGINT', handleExit);
+    process.once('SIGINT', shutdown);
+    process.once('SIGTERM', shutdown);
+  } catch (error: any) {
+    logger.error(
+      'Failed to start API server',
+      error
+    );
 
-  } catch (err: any) {
-    logger.error('Failed to start API server', err);
     process.exit(1);
   }
 }

@@ -66,10 +66,14 @@ export async function getTransporter(): Promise<nodemailer.Transporter> {
       user,
       pass,
     },
+    connectionTimeout: 15000,
+    greetingTimeout: 15000,
+    socketTimeout: 20000,
   });
 
   // ---------------------------------------------------------
-  // Verify SMTP connection
+  // Verify SMTP connection. Invalid local credentials fall back
+  // to a fresh Ethereal account so scheduled jobs can complete.
   // ---------------------------------------------------------
 
   try {
@@ -79,13 +83,39 @@ export async function getTransporter(): Promise<nodemailer.Transporter> {
       '✔ SMTP transporter verified successfully.'
     );
   } catch (err: any) {
-    logger.error(
-      '❌ SMTP transporter verification failed',
-      err
+    const isDevelopment = env.NODE_ENV === 'development';
+
+    if (!isDevelopment || !env.ETHEREAL_USER || !env.ETHEREAL_PASSWORD) {
+      logger.error(
+        '❌ SMTP transporter verification failed',
+        err
+      );
+
+      transporter = null;
+      throw err;
+    }
+
+    logger.warn(
+      'Configured Ethereal credentials were rejected. Creating a fresh test account.'
     );
 
-    transporter = null;
-    throw err;
+    const testAccount = await nodemailer.createTestAccount();
+
+    transporter = nodemailer.createTransport({
+      host: 'smtp.ethereal.email',
+      port: 587,
+      secure: false,
+      auth: {
+        user: testAccount.user,
+        pass: testAccount.pass,
+      },
+      connectionTimeout: 15000,
+      greetingTimeout: 15000,
+      socketTimeout: 20000,
+    });
+
+    await transporter.verify();
+    logger.info('✔ Fresh Ethereal SMTP transporter verified successfully.');
   }
 
   return transporter;
@@ -128,6 +158,36 @@ export async function sendMail(options: {
       previewUrl: previewUrl || undefined,
     };
   } catch (err: any) {
+    if (
+      env.NODE_ENV === 'development' &&
+      String(err?.message || '').includes('535')
+    ) {
+      logger.warn(
+        'SMTP authentication failed during send. Retrying with a fresh Ethereal account.'
+      );
+
+      transporter = null;
+      const retryTransporter = await getTransporter();
+      const retryInfo = await retryTransporter.sendMail({
+        from: options.from,
+        to: options.to,
+        subject: options.subject,
+        text: options.body,
+        html: options.body.replace(/\n/g, '<br/>'),
+      });
+
+      const retryPreviewUrl = nodemailer.getTestMessageUrl(retryInfo);
+
+      logger.info(
+        `Email sent successfully on SMTP retry. Message ID: ${retryInfo.messageId}`
+      );
+
+      return {
+        messageId: retryInfo.messageId,
+        previewUrl: retryPreviewUrl || undefined,
+      };
+    }
+
     logger.error(
       `Failed to send email to ${options.to}`,
       err
