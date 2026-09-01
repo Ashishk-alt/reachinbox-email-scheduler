@@ -32,12 +32,12 @@ import {
 const configuredApiUrl =
   import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL;
 
-const BACKEND_URL = (
+const API_BASE_URL = (
   configuredApiUrl ||
   (window.location.hostname === 'localhost'
-    ? 'http://localhost:5000/api'
-    : 'https://reachinbox-email-scheduler-yd4h.onrender.com/api')
-).replace(/\/api$/, '');
+    ? 'http://localhost:5000'
+    : 'https://reachinbox-email-scheduler-yd4h.onrender.com')
+).replace(/\/$/, '').replace(/\/api$/, '') + '/api';
 
 export const App: React.FC = () => {
   const [user, setUser] = useState<UserProfile | null>(null);
@@ -180,7 +180,7 @@ export const App: React.FC = () => {
 
   // Google login
   const handleGoogleLogin = () => {
-    window.location.href = `${BACKEND_URL}/auth/google`;
+    window.location.href = `${API_BASE_URL}/auth/google`;
   };
 
   // Logout
@@ -199,7 +199,7 @@ export const App: React.FC = () => {
 
   // Slack connect
   const handleConnectSlack = () => {
-    window.location.href = `${BACKEND_URL}/slack/connect`;
+    window.location.href = `${API_BASE_URL}/slack/connect`;
   };
 
   // Slack disconnect
