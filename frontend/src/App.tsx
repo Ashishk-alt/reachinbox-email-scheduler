@@ -29,7 +29,15 @@ import {
   RefreshCw,
 } from 'lucide-react';
 
-const BACKEND_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api';
+const configuredApiUrl =
+  import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL;
+
+const BACKEND_URL = (
+  configuredApiUrl ||
+  (window.location.hostname === 'localhost'
+    ? 'http://localhost:5000/api'
+    : 'https://reachinbox-email-scheduler-yd4h.onrender.com/api')
+).replace(/\/api$/, '');
 
 export const App: React.FC = () => {
   const [user, setUser] = useState<UserProfile | null>(null);
