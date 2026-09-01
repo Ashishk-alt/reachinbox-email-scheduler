@@ -358,9 +358,14 @@ export async function getScheduled(
       }),
     ]);
 
+    const normalizedJobs = jobs.map((job) => ({
+      ...job,
+      status: job.status === 'processing' ? 'scheduled' : job.status,
+    }));
+
     return res.json({
       success: true,
-      data: jobs,
+      data: normalizedJobs,
       pagination: {
         page,
         limit,
