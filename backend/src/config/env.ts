@@ -21,6 +21,7 @@ const envSchema = z.object({
   SLACK_CALLBACK_URL: z.string().url(),
   ETHEREAL_USER: z.string().optional(),
   ETHEREAL_PASSWORD: z.string().optional(),
+  RESEND_API_KEY: z.string().optional(),
   WORKER_CONCURRENCY: z.coerce.number().int().positive().default(5),
   MIN_EMAIL_DELAY_MS: z.coerce.number().int().nonnegative().default(2000),
   MAX_EMAILS_PER_HOUR_PER_SENDER: z.coerce.number().int().positive().default(200),

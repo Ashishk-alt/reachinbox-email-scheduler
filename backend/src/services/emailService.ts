@@ -1,4 +1,5 @@
 import nodemailer from 'nodemailer';
+import { Resend } from 'resend';
 import { env } from '../config/env';
 import { logger } from '../utils/logger';
 
@@ -130,6 +131,32 @@ export async function sendMail(options: {
   subject: string;
   body: string;
 }) {
+  if (env.RESEND_API_KEY) {
+    const resend = new Resend(env.RESEND_API_KEY);
+    const response = await resend.emails.send({
+      from: options.from,
+      to: [options.to],
+      subject: options.subject,
+      text: options.body,
+      html: options.body.replace(/\n/g, '<br/>'),
+    });
+
+    if (response.error || !response.data?.id) {
+      throw new Error(
+        response.error?.message || 'Resend did not return a message ID'
+      );
+    }
+
+    logger.info(
+      `Email sent successfully with Resend. Message ID: ${response.data.id}`
+    );
+
+    return {
+      messageId: response.data.id,
+      previewUrl: undefined,
+    };
+  }
+
   const mailTransporter = await getTransporter();
 
   try {
